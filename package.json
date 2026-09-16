@@ -1,0 +1,14 @@
+{
+  "name": "prediction-light-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled jobs that pull real fixtures, standings, and live scores from API-Football and write them into the prediction-light Firestore database.",
+  "scripts": {
+    "daily": "node scripts/daily-sync.mjs",
+    "live": "node scripts/live-sync.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}

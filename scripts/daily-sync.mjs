@@ -107,9 +107,17 @@ async function syncLeagueStandingsAndTeams(league) {
 
 async function fetchH2H(homeApiId, awayApiId) {
   try {
-    const rows = await apiFootball("/fixtures/headtohead", { h2h: `${homeApiId}-${awayApiId}`, last: 10 });
+    // The free API-Football plan also rejects `last` here ("Free plans do
+    // not have access to the Last parameter"), so - same trick as
+    // syncUpcomingFixtures - pull the full head-to-head history in one call
+    // and take the most recent 10 ourselves instead of asking the API to.
+    const rows = await apiFootball("/fixtures/headtohead", { h2h: `${homeApiId}-${awayApiId}` });
+    const recent = (rows || [])
+      .slice()
+      .sort((a, b) => new Date(b.fixture.date) - new Date(a.fixture.date))
+      .slice(0, 10);
     let homeWins = 0, draws = 0, awayWins = 0;
-    for (const f of rows || []) {
+    for (const f of recent) {
       const hg = f.goals.home, ag = f.goals.away;
       if (hg == null || ag == null) continue;
       const homeWasHome = f.teams.home.id === homeApiId;

@@ -1,0 +1,31 @@
+name: Clean up mock match data
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm install
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: prediction-light
+          workload_identity_provider: projects/278522340951/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: prediction-light-sync@prediction-light.iam.gserviceaccount.com
+
+      - name: Run cleanup
+        run: npm run cleanup-mock-data
+

@@ -9,6 +9,7 @@
     "live": "node scripts/live-sync.mjs"
   },
   "dependencies": {
-    "firebase-admin": "^12.6.0"
+    "firebase-admin": "^12.6.0",
+    "google-auth-library": "^9.14.0"
   }
 }

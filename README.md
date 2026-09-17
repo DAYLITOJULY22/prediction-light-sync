@@ -13,10 +13,10 @@ anywhere in this repo, only a GitHub secret holding your API-Football key.
   attack/defense/form/home-advantage ratings from real goals and results;
   pulls each league's next 10 fixtures and upserts them into `matches`,
   fetching head-to-head history only for fixtures it hasn't seen before.
-- **`live-sync.yml`** (runs every ~20 minutes, or on demand): pulls all of
-  today's fixtures in one API call, filters to the 8 tracked leagues, and
-  writes current status/score/minute so the site's live in-play analysis
-  updates automatically.
+- **`live-sync.yml`** (runs every ~20 minutes, or on demand): looks up
+  current status/score/minute (by fixture id, in batches of up to 20) for
+  every match daily-sync has already seeded whose kickoff has arrived, and
+  writes it back so the site's live in-play analysis updates automatically.
 
 Both schedules are tuned to stay comfortably under API-Football's free-tier
 quota of ~100 requests/day.
@@ -60,6 +60,14 @@ quota of ~100 requests/day.
   won't be the *current* table. Once you upgrade, bump or remove
   `MAX_FREE_PLAN_SEASON` in that file to go back to always using the live
   current season.
+- **API-Football's free plan also blocks looking up fixtures by date
+  outside a small window around today** (`Free plans do not have access to
+  this date, try from <today-1> to <today+1>`) - the opposite direction
+  from the season restriction above, and it would have broken live-sync's
+  original "ask what's happening on today's (shifted) date" approach
+  entirely. `live-sync.mjs` instead looks up the exact fixtures daily-sync
+  already recorded (by `apiFixtureId`, up to 20 per call via `/fixtures?ids=`),
+  which isn't restricted by date or season at all.
 - Shots-on-target and possession in the live in-play data stay at neutral
   placeholders (0/0/50%) - fetching real per-fixture statistics would need
   an extra API call per live match every sync, which doesn't fit the free

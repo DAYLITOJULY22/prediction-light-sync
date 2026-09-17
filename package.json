@@ -6,7 +6,8 @@
   "description": "Scheduled jobs that pull real fixtures, standings, and live scores from API-Football and write them into the prediction-light Firestore database.",
   "scripts": {
     "daily": "node scripts/daily-sync.mjs",
-    "live": "node scripts/live-sync.mjs"
+    "live": "node scripts/live-sync.mjs",
+    "cleanup-mock-data": "node scripts/cleanup-mock-data.mjs"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0"

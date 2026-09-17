@@ -1,97 +1,101 @@
-// Runs every ~20 minutes (see .github/workflows/live-sync.yml). Pulls
-// *today's* fixtures across every league from a single API-Football call
-// (fixtures?date=YYYY-MM-DD covers every league globally, so this stays at
-// 1 request per run regardless of how many of our 8 leagues are playing),
-// filters down to the leagues Prediction Light tracks, and writes current
-// status/score/minute into `matches` so the site's live in-play analysis
-// updates automatically instead of needing a manual admin edit.
+// Runs every ~20 minutes (see .github/workflows/live-sync.yml). Looks up the
+// real-time status of every match Prediction Light already knows about
+// (seeded by daily-sync.mjs) and writes current status/score/minute so the
+// site's live in-play analysis updates automatically instead of needing a
+// manual admin edit.
 //
-// While the free-plan season clamp in leagues.mjs is active, "today" for a
-// given league actually means the equivalent date in the real historical
-// season we're allowed to query (see seasonOffset() there) - the date we
-// ask API-Football about is shifted back by that many years, and whatever
-// we get back is shifted forward again before it's written, so it lines up
-// with the shifted fixtures daily-sync already seeded for "today".
+// Earlier version of this file asked API-Football for "today's fixtures"
+// via /fixtures?date=YYYY-MM-DD, shifted back to the equivalent date in the
+// free-plan's clamped historical season (see seasonOffset() in
+// lib/leagues.mjs). That turned out to hit a *separate* free-plan
+// restriction: /fixtures?date= only accepts a small window of real, current
+// dates ("Free plans do not have access to this date, try from <today-1> to
+// <today+1>") - the opposite direction from the season clamp, which only
+// allows *old* seasons. A historical date can't be queried by date at all
+// on the free plan.
+//
+// Instead, this version looks up fixtures by id via /fixtures?ids=, which
+// isn't restricted by date or season - it just returns current data for
+// specific fixtures, which is exactly what we need since daily-sync already
+// recorded each match's real apiFixtureId. Up to 20 ids per call, so this
+// stays well inside the free daily quota even with every tracked league's
+// matches due at once.
 import { db, Timestamp } from "./lib/firestore.mjs";
 import { apiFootball } from "./lib/apiFootball.mjs";
-import { LEAGUES, byApiId, seasonOffset, shiftForward, shiftBackward } from "./lib/leagues.mjs";
 import { mapStatus } from "./lib/status.mjs";
 
-function isoDate(d) {
-  return d.toISOString().slice(0, 10);
+const IDS_PER_CALL = 20;
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 async function main() {
-  const now = new Date();
+  const now = Timestamp.now();
 
-  // Group tracked leagues by their current season offset - in practice
-  // this is almost always a single group (every league sharing the same
-  // clamp), but grouping keeps this correct even when euro-type and
-  // calendar-type leagues briefly straddle a season rollover and land on
-  // different offsets.
-  const byOffset = new Map();
-  for (const league of LEAGUES) {
-    const offset = seasonOffset(league, now);
-    if (!byOffset.has(offset)) byOffset.set(offset, []);
-    byOffset.get(offset).push(league);
+  // Every match whose (possibly shifted) kickoff has already arrived is a
+  // candidate for a status change - filtering to status != "finished" here
+  // in JS rather than in the query avoids needing a second inequality/
+  // composite index alongside the kickoff range filter.
+  const snap = await db.collection("matches").where("kickoff", "<=", now).get();
+  const docs = snap.docs.filter(d => d.data().status !== "finished" && d.data().apiFixtureId);
+
+  if (!docs.length) {
+    console.log("No in-progress or awaiting-result matches to check.");
+    return;
+  }
+
+  const byFixtureId = new Map();
+  for (const group of chunk(docs, IDS_PER_CALL)) {
+    const ids = group.map(d => d.data().apiFixtureId).join("-");
+    let fixtures;
+    try {
+      fixtures = await apiFootball("/fixtures", { ids });
+    } catch (e) {
+      console.error("  fixtures lookup failed:", e.message);
+      continue;
+    }
+    for (const f of fixtures || []) byFixtureId.set(f.fixture.id, f);
   }
 
   const batch = db.batch();
-  let total = 0;
+  let updated = 0;
+  for (const doc of docs) {
+    const f = byFixtureId.get(doc.data().apiFixtureId);
+    if (!f) continue;
 
-  for (const [offset, leagues] of byOffset) {
-    const queryDate = isoDate(shiftBackward(now, offset));
-    let fixtures;
-    try {
-      fixtures = await apiFootball("/fixtures", { date: queryDate });
-    } catch (e) {
-      console.error(`live-sync fetch failed for offset ${offset} (${queryDate}):`, e.message);
-      continue;
-    }
+    const status = mapStatus(f.fixture.status.short);
+    const update = { status, updatedAt: Timestamp.now() };
 
-    const trackedApiIds = new Set(leagues.map(l => l.apiId));
-    const relevant = (fixtures || []).filter(f => trackedApiIds.has(f.league.id));
-    console.log(`${relevant.length} fixture(s) on ${queryDate} (offset ${offset}) across tracked leagues.`);
-    total += relevant.length;
-
-    for (const f of relevant) {
-      const matchId = `af${f.fixture.id}`;
-      const status = mapStatus(f.fixture.status.short);
-      const league = byApiId(f.league.id);
-      const displayKickoff = shiftForward(new Date(f.fixture.date), offset);
-
-      const update = {
-        leagueId: league.id,
-        homeTeamId: String(f.teams.home.id),
-        awayTeamId: String(f.teams.away.id),
-        status,
-        kickoff: Timestamp.fromDate(displayKickoff),
-        apiFixtureId: f.fixture.id,
-        updatedAt: Timestamp.now()
+    if (status === "live") {
+      update.live = {
+        minute: f.fixture.status.elapsed || 0,
+        homeScore: f.goals.home ?? 0,
+        awayScore: f.goals.away ?? 0,
+        // Shots-on-target/possession need a per-fixture statistics call that
+        // would blow the free daily request budget if polled this often, so
+        // they stay at neutral placeholders for now - minute and score (the
+        // two biggest drivers in predictLive) are always real.
+        homeShotsOnTarget: 0,
+        awayShotsOnTarget: 0,
+        possessionHome: 50
       };
-
-      if (status === "live") {
-        update.live = {
-          minute: f.fixture.status.elapsed || 0,
-          homeScore: f.goals.home ?? 0,
-          awayScore: f.goals.away ?? 0,
-          // Shots-on-target/possession need a per-fixture statistics call
-          // that would blow the free daily request budget if polled this
-          // often, so they stay at neutral placeholders for now - minute and
-          // score (the two biggest drivers in predictLive) are always real.
-          homeShotsOnTarget: 0,
-          awayShotsOnTarget: 0,
-          possessionHome: 50
-        };
-      }
-
-      batch.set(db.collection("matches").doc(matchId), update, { merge: true });
+    } else if (status === "finished") {
+      update.finalScore = { home: f.goals.home ?? 0, away: f.goals.away ?? 0 };
     }
+
+    batch.set(doc.ref, update, { merge: true });
+    updated++;
   }
 
-  if (!total) return;
+  if (!updated) {
+    console.log("Checked candidates, but no status changes to write.");
+    return;
+  }
   await batch.commit();
-  console.log("Live sync complete.");
+  console.log(`Live sync complete: updated ${updated} match(es).`);
 }
 
 main().catch(err => {

@@ -49,6 +49,17 @@ quota of ~100 requests/day.
 
 ## Known limitations of this first version
 
+- **API-Football's free plan doesn't cover the current season.** Every
+  standings/fixtures request for the live 2026/27 season fails with `Free
+  plans do not have access to this season, try from 2022 to 2024`. Until
+  the API-Football key is upgraded to a paid plan (Pro, at $19/month for
+  7,500 requests/day, comfortably covers this project's ~100/day usage and
+  removes the season restriction), `scripts/lib/leagues.mjs` clamps
+  `seasonFor()` to `2024` so daily-sync still pulls real standings and
+  finished fixtures from that season instead of failing outright - it just
+  won't be the *current* table. Once you upgrade, bump or remove
+  `MAX_FREE_PLAN_SEASON` in that file to go back to always using the live
+  current season.
 - Shots-on-target and possession in the live in-play data stay at neutral
   placeholders (0/0/50%) - fetching real per-fixture statistics would need
   an extra API call per live match every sync, which doesn't fit the free
@@ -59,6 +70,7 @@ quota of ~100 requests/day.
 - Refresh interval for live matches is ~20 minutes, not continuous, to stay
   within the free API quota.
 
-All three are just quota trade-offs, not architectural limits - upgrading
-the API-Football plan later would let the scripts poll harder and pull real
-injury/statistics data.
+None of these are architectural limits - the last three are just quota
+trade-offs, and the season restriction is purely a plan restriction.
+Upgrading the API-Football plan later would remove the season clamp above,
+let the scripts poll harder, and pull real injury/statistics data.
